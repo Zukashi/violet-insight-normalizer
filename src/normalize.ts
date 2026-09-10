@@ -297,10 +297,7 @@ function confidenceFingerprint(raw: unknown): string {
   if (classified.status === 'known') {
     return `known:${String(classified.value)}`;
   }
-  if (classified.status === 'unknown') {
-    return 'unknown';
-  }
-  return `invalid:${typeof raw}`;
+  return classified.status;
 }
 
 function canonicalJson(value: unknown): string {

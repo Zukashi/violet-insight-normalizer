@@ -39,18 +39,21 @@ export function normalize(
   const admitted = results
     .toSorted((a, b) => compareResults(a, b))
     .filter((result) => admit(result, mediaId, selection, issues));
-  const { distinct, conflictedKinds } = dropRepeatedDeliveries(admitted, issues);
+  const { distinct, conflictRevisionByKind } = dropRepeatedDeliveries(admitted, issues);
   const categories = initialCategories(selection);
   const insights: Insight[] = [];
-
   const candidatesByKind = Map.groupBy(distinct, (result) => result.kind);
 
   for (const kind of KINDS) {
-    if (conflictedKinds.has(kind)) {
+    const selected = selectWinner(candidatesByKind.get(kind) ?? [], issues);
+    const conflictRevision = conflictRevisionByKind.get(kind);
+    if (conflictRevision !== undefined && !outranksConflict(selected, conflictRevision)) {
+      if (selected.outcome === 'winner') {
+        issues.push(issue(ISSUE_CODE.WITHHELD_BY_CONFLICT, [selected.result.resultId], []));
+      }
       categories[kind] = conflictState();
       continue;
     }
-    const selected = selectWinner(candidatesByKind.get(kind) ?? [], issues);
     if (selected.outcome === 'none') {
       continue;
     }
@@ -59,7 +62,9 @@ export function normalize(
       continue;
     }
     categories[kind] = categoryStateOf(selected.result);
-    insights.push(...insightsOf(selected.result, issues));
+    for (const insight of insightsOf(selected.result, issues)) {
+      insights.push(insight);
+    }
   }
 
   return {
@@ -97,30 +102,36 @@ function admissionIssue(result: ProviderResult, mediaId: string, selection: Sele
 function dropRepeatedDeliveries(
   results: readonly ProviderResult[],
   issues: Issue[]
-): { distinct: ProviderResult[]; conflictedKinds: ReadonlySet<Kind> } {
+): { distinct: ProviderResult[]; conflictRevisionByKind: ReadonlyMap<Kind, number> } {
   const distinct: ProviderResult[] = [];
-  const conflictedKinds = new Set<Kind>();
+  const conflictRevisionByKind = new Map<Kind, number>();
 
   for (const [resultId, deliveries] of Map.groupBy(results, (result) => result.resultId)) {
     const [first, ...repeats] = deliveries;
     if (first === undefined) {
       continue;
     }
-    distinct.push(first);
-    if (repeats.length === 0) {
-      continue;
-    }
     const firstShape = deliveryShape(first);
     const conflicting = repeats.some((repeat) => deliveryShape(repeat) !== firstShape);
-    if (conflicting) {
-      for (const delivery of deliveries) {
-        conflictedKinds.add(delivery.kind);
+    if (!conflicting) {
+      distinct.push(first);
+      if (repeats.length > 0) {
+        issues.push(issue(ISSUE_CODE.DUPLICATE_DELIVERY, [resultId], []));
       }
+      continue;
     }
-    issues.push(issue(conflicting ? ISSUE_CODE.CONFLICTING_DELIVERY : ISSUE_CODE.DUPLICATE_DELIVERY, [resultId], []));
+    for (const delivery of deliveries) {
+      const known = conflictRevisionByKind.get(delivery.kind) ?? -1;
+      conflictRevisionByKind.set(delivery.kind, Math.max(known, delivery.revision));
+    }
+    issues.push(issue(ISSUE_CODE.CONFLICTING_DELIVERY, [resultId], []));
   }
 
-  return { distinct, conflictedKinds };
+  return { distinct, conflictRevisionByKind };
+}
+
+function outranksConflict(selected: Selected, conflictRevision: number): boolean {
+  return selected.outcome === 'winner' && selected.result.revision > conflictRevision;
 }
 
 function selectWinner(candidates: readonly ProviderResult[], issues: Issue[]): Selected {
@@ -266,7 +277,7 @@ function initialCategories(selection: Selection): Categories {
 
 function deliveryShape(result: ProviderResult): string {
   const { receivedAt: _receivedAt, ...content } = result;
-  return canonicalJson(content);
+  return canonicalJson({ ...content, producedAt: Date.parse(content.producedAt) });
 }
 
 function canonicalJson(value: unknown): string {

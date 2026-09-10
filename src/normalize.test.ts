@@ -146,11 +146,17 @@ describe('normalize', () => {
       ...secondRevision,
       items: [{ observationId: 't-a', value: { label: 'Audience growth' }, confidence: 0.9 }]
     } satisfies ProviderResult;
+    const conflictingStaleRedelivery = {
+      ...firstRevision,
+      items: [{ observationId: 't-a', value: { label: 'Audience growth' }, confidence: 0.1 }]
+    } satisfies ProviderResult;
+    const parse = (result: ProviderResult) => providerResultSchema.parse(result);
 
     // when
-    const record = normalize(MEDIA_ID, delivered, selection);
-    const replayed = permutations.map((permutation) => normalize(MEDIA_ID, permutation, selection));
-    const conflicted = normalize(MEDIA_ID, [...delivered, conflictingRedelivery], selection);
+    const record = normalize(MEDIA_ID, delivered.map((result) => parse(result)), selection);
+    const replayed = permutations.map((permutation) => normalize(MEDIA_ID, permutation.map((result) => parse(result)), selection));
+    const conflicted = normalize(MEDIA_ID, [...delivered, conflictingRedelivery].map((result) => parse(result)), selection);
+    const staleConflict = normalize(MEDIA_ID, [...delivered, conflictingStaleRedelivery].map((result) => parse(result)), selection);
 
     // then
     expect(record.insights.map((insight) => [insight.observationId, insight.source.resultId, insight.confidence])).toEqual([
@@ -171,7 +177,14 @@ describe('normalize', () => {
     expect(conflicted.categories.topic).toEqual({ status: 'conflict', revision: null, analyzedSpans: null, source: null });
     expect(conflicted.insights).toEqual([]);
     expect(conflicted.issues).toEqual([
-      { code: ISSUE_CODE.CONFLICTING_DELIVERY, resultIds: ['res-topic-rev-2'], observationIds: [] }
+      { code: ISSUE_CODE.CONFLICTING_DELIVERY, resultIds: ['res-topic-rev-2'], observationIds: [] },
+      { code: ISSUE_CODE.WITHHELD_BY_CONFLICT, resultIds: ['res-topic-rev-1'], observationIds: [] }
+    ]);
+    expect(staleConflict.categories.topic.status).toBe('complete');
+    expect(staleConflict.insights.map((insight) => insight.source.resultId)).toEqual(['res-topic-rev-2']);
+    expect(staleConflict.issues).toEqual([
+      { code: ISSUE_CODE.CONFLICTING_DELIVERY, resultIds: ['res-topic-rev-1'], observationIds: [] },
+      { code: ISSUE_CODE.DUPLICATE_DELIVERY, resultIds: ['res-topic-rev-2'], observationIds: [] }
     ]);
   });
 
@@ -203,7 +216,11 @@ describe('normalize', () => {
     } satisfies ProviderResult;
 
     // when
-    const record = normalize(MEDIA_ID, [previousPeople, reprocessedPeople, previousTopics, previousPeople], selection);
+    const record = normalize(
+      MEDIA_ID,
+      [previousPeople, reprocessedPeople, previousTopics, previousPeople].map((result) => providerResultSchema.parse(result)),
+      selection
+    );
 
     // then
     expect(record.insights.map((insight) => [insight.id, insight.value, insight.confidence])).toEqual([

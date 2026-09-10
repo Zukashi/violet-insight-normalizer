@@ -150,6 +150,19 @@ describe('normalize', () => {
       ...firstRevision,
       items: [{ observationId: 't-a', value: { label: 'Audience growth' }, confidence: 0.1 }]
     } satisfies ProviderResult;
+    const rivalSecondRevision = {
+      ...secondRevision,
+      resultId: 'res-topic-rev-2-rival',
+      items: [{ observationId: 't-c', value: { label: 'Sponsorships' }, confidence: 0.5 }]
+    } satisfies ProviderResult;
+    const withConflictingObservation = {
+      ...secondRevision,
+      items: [
+        { observationId: 't-a', value: { label: 'Audience growth' }, confidence: 0.65 },
+        { observationId: 't-a', value: { label: 'Audience Growth' }, confidence: 0.65 },
+        { observationId: 't-d', value: { label: 'Live shows' }, confidence: 0.3 }
+      ]
+    } satisfies ProviderResult;
     const parse = (result: ProviderResult) => providerResultSchema.parse(result);
 
     // when
@@ -157,6 +170,8 @@ describe('normalize', () => {
     const replayed = permutations.map((permutation) => normalize(MEDIA_ID, permutation.map((result) => parse(result)), selection));
     const conflicted = normalize(MEDIA_ID, [...delivered, conflictingRedelivery].map((result) => parse(result)), selection);
     const staleConflict = normalize(MEDIA_ID, [...delivered, conflictingStaleRedelivery].map((result) => parse(result)), selection);
+    const rivalry = normalize(MEDIA_ID, [...delivered, rivalSecondRevision].map((result) => parse(result)), selection);
+    const observationConflict = normalize(MEDIA_ID, [firstRevision, withConflictingObservation].map((result) => parse(result)), selection);
 
     // then
     expect(record.insights.map((insight) => [insight.observationId, insight.source.resultId, insight.confidence])).toEqual([
@@ -167,8 +182,8 @@ describe('normalize', () => {
       expect.objectContaining({ status: 'complete', revision: 2, source: expect.objectContaining({ resultId: 'res-topic-rev-2' }) })
     );
     expect(record.issues).toEqual([
-      { code: ISSUE_CODE.DUPLICATE_DELIVERY, resultIds: ['res-topic-rev-2'], observationIds: [] },
-      { code: ISSUE_CODE.SUPERSEDED_REVISION, resultIds: ['res-topic-rev-1'], observationIds: [] }
+      { code: ISSUE_CODE.DUPLICATE_DELIVERY, kind: 'topic', resultIds: ['res-topic-rev-2'], observationIds: [] },
+      { code: ISSUE_CODE.SUPERSEDED_REVISION, kind: 'topic', resultIds: ['res-topic-rev-1'], observationIds: [] }
     ]);
     for (const replay of replayed) {
       expect(replay).toEqual(record);
@@ -177,20 +192,33 @@ describe('normalize', () => {
     expect(conflicted.categories.topic).toEqual({ status: 'conflict', revision: null, analyzedSpans: null, source: null });
     expect(conflicted.insights).toEqual([]);
     expect(conflicted.issues).toEqual([
-      { code: ISSUE_CODE.CONFLICTING_DELIVERY, resultIds: ['res-topic-rev-2'], observationIds: [] },
-      { code: ISSUE_CODE.WITHHELD_BY_CONFLICT, resultIds: ['res-topic-rev-1'], observationIds: [] }
+      { code: ISSUE_CODE.CONFLICTING_DELIVERY, kind: 'topic', resultIds: ['res-topic-rev-2'], observationIds: [] },
+      { code: ISSUE_CODE.WITHHELD_BY_CONFLICT, kind: 'topic', resultIds: ['res-topic-rev-1'], observationIds: [] }
     ]);
     expect(staleConflict.categories.topic.status).toBe('complete');
     expect(staleConflict.insights.map((insight) => insight.source.resultId)).toEqual(['res-topic-rev-2']);
     expect(staleConflict.issues).toEqual([
-      { code: ISSUE_CODE.CONFLICTING_DELIVERY, resultIds: ['res-topic-rev-1'], observationIds: [] },
-      { code: ISSUE_CODE.DUPLICATE_DELIVERY, resultIds: ['res-topic-rev-2'], observationIds: [] }
+      { code: ISSUE_CODE.CONFLICTING_DELIVERY, kind: 'topic', resultIds: ['res-topic-rev-1'], observationIds: [] },
+      { code: ISSUE_CODE.DUPLICATE_DELIVERY, kind: 'topic', resultIds: ['res-topic-rev-2'], observationIds: [] }
+    ]);
+    expect(rivalry.categories.topic.status).toBe('conflict');
+    expect(rivalry.insights).toEqual([]);
+    expect(rivalry.issues).toEqual([
+      { code: ISSUE_CODE.CONFLICTING_REVISION, kind: 'topic', resultIds: ['res-topic-rev-2', 'res-topic-rev-2-rival'], observationIds: [] },
+      { code: ISSUE_CODE.DUPLICATE_DELIVERY, kind: 'topic', resultIds: ['res-topic-rev-2'], observationIds: [] },
+      { code: ISSUE_CODE.SUPERSEDED_REVISION, kind: 'topic', resultIds: ['res-topic-rev-1'], observationIds: [] }
+    ]);
+    expect(observationConflict.categories.topic.status).toBe('complete');
+    expect(observationConflict.insights.map((insight) => insight.observationId)).toEqual(['t-d']);
+    expect(observationConflict.issues).toEqual([
+      { code: ISSUE_CODE.CONFLICTING_OBSERVATION, kind: 'topic', resultIds: ['res-topic-rev-2'], observationIds: ['t-a'] },
+      { code: ISSUE_CODE.SUPERSEDED_REVISION, kind: 'topic', resultIds: ['res-topic-rev-1'], observationIds: [] }
     ]);
   });
 
   it('keeps uncertain observations distinct and never falls back to an unselected run', () => {
     // given
-    const selection = { provider: PROVIDER, runId: SECOND_RUN, expectedKinds: ['person', 'topic'] } satisfies Selection;
+    const selection = { provider: PROVIDER, runId: SECOND_RUN, expectedKinds: ['person', 'topic', 'phrase'] } satisfies Selection;
     const previousPeople = {
       ...firstRunBase,
       kind: 'person',
@@ -215,10 +243,21 @@ describe('normalize', () => {
       ]
     } satisfies ProviderResult;
 
+    const otherMediaPeople = { ...reprocessedPeople, resultId: 'res-other-media', mediaId: 'media-2' } satisfies ProviderResult;
+    const unexpectedPlaces = {
+      ...secondRunBase,
+      kind: 'place',
+      resultId: 'res-run-2-place',
+      items: [{ observationId: 'pl-1', value: { label: 'Berlin' }, confidence: 0.8 }]
+    } satisfies ProviderResult;
+    const failedPhrases = { ...secondRunBase, kind: 'phrase', resultId: 'res-run-2-phrase', state: 'failed', items: [] } satisfies ProviderResult;
+
     // when
     const record = normalize(
       MEDIA_ID,
-      [previousPeople, reprocessedPeople, previousTopics, previousPeople].map((result) => providerResultSchema.parse(result)),
+      [previousPeople, reprocessedPeople, previousTopics, previousPeople, otherMediaPeople, unexpectedPlaces, failedPhrases].map(
+        (result) => providerResultSchema.parse(result)
+      ),
       selection
     );
 
@@ -232,10 +271,16 @@ describe('normalize', () => {
       expect.objectContaining({ status: 'partial', revision: 1, analyzedSpans: [{ startMs: 0, endMs: 30_000 }] })
     );
     expect(record.categories.topic).toEqual({ status: 'pending', revision: null, analyzedSpans: null, source: null });
+    expect(record.categories.phrase).toEqual(
+      expect.objectContaining({ status: 'failed', revision: 1, source: expect.objectContaining({ resultId: 'res-run-2-phrase' }) })
+    );
+    expect(record.categories.place.status).toBe('not_requested');
     expect(record.issues).toEqual([
-      { code: ISSUE_CODE.IGNORED_UNSELECTED_RUN, resultIds: ['res-run-1-person'], observationIds: [] },
-      { code: ISSUE_CODE.IGNORED_UNSELECTED_RUN, resultIds: ['res-run-1-topic'], observationIds: [] },
-      { code: ISSUE_CODE.INVALID_CONFIDENCE, resultIds: ['res-run-2-person'], observationIds: ['p-2'] }
+      { code: ISSUE_CODE.IGNORED_UNEXPECTED_KIND, kind: 'place', resultIds: ['res-run-2-place'], observationIds: [] },
+      { code: ISSUE_CODE.IGNORED_UNSELECTED_RUN, kind: 'topic', resultIds: ['res-run-1-topic'], observationIds: [] },
+      { code: ISSUE_CODE.IGNORED_UNSELECTED_RUN, kind: 'person', resultIds: ['res-run-1-person'], observationIds: [] },
+      { code: ISSUE_CODE.INVALID_CONFIDENCE, kind: 'person', resultIds: ['res-run-2-person'], observationIds: ['p-2'] },
+      { code: ISSUE_CODE.MEDIA_MISMATCH, kind: 'person', resultIds: ['res-other-media'], observationIds: [] }
     ]);
   });
 });

@@ -16,14 +16,14 @@ Node 22.12 or newer (`toSorted`, `Map.groupBy`, vitest 4).
 
 - **Input** `ProviderResult`: one snapshot of one category (`kind`: transcript, topic, phrase, person, place, object, sentiment) for one analysis run. Fields: `resultId`, `mediaId`, `provider`, `modelVersion`, `runId`, `revision`, `state` (`partial` | `complete` | `failed`), `producedAt`, `receivedAt`, optional `analyzedSpans`, and `items[]`, each with `observationId`, a per-kind `value`, an optional `span` and `confidence` typed as `unknown`. The zod schema is exported; the ingestion adapter parses raw payloads with it at the boundary and passes the parsed output (not the raw object) to the function, which validates meaning. The record is a snapshot: it shares no objects with the input.
 - **Selection** `{ provider, runId, expectedKinds }`: the caller states which run is the source of truth and which categories it asked for.
-- **Output** `InsightRecord { schemaVersion, mediaId, selection, categories, insights, issues }`. `categories[kind]` carries a status (`not_requested` | `pending` | `partial` | `complete` | `failed` | `conflict`), the winning revision, the analyzed spans and the source result. Every `Insight` carries its `source` (provider, model version, run, result, produced and received time). `issues[]` lists, by id, everything that was ignored, superseded, duplicated, conflicting or invalid.
+- **Output** `InsightRecord { schemaVersion, mediaId, selection, categories, insights, issues }`. `categories[kind]` carries a status (`not_requested` | `pending` | `partial` | `complete` | `failed` | `conflict`), the winning revision, the analyzed spans and the source result. Every `Insight` carries its `source` (provider, model version, run, result, produced and received time). `issues[]` lists, by category (`kind`) and id, everything that was ignored, superseded, duplicated, conflicting, withheld or invalid.
 
 ## Invariants
 
 - The same set of deliveries gives a deep-equal record whatever the order. A repeated delivery changes nothing in `categories` or `insights`; it only adds one duplicate entry to `issues`, because reporting duplicates is part of the job. No clock, no randomness, input never mutated.
 - Only the selected run contributes insights. Other runs are reported as ignored, never blended in. A newer model becomes the truth when someone selects it, not because it arrived later or because its version string sorts higher.
 - Within a category the highest `revision` replaces lower ones. A late lower revision cannot resurrect removed observations. An empty complete snapshot means "analyzed, nothing found" and clears the category.
-- The same `resultId` delivered twice with identical content is a duplicate and is kept once (`receivedAt` is receiver metadata and does not count as content). With different content it is a conflict: unless a clean result with a strictly higher revision exists, the category reports `conflict`, yields no insights, and any withheld clean result is named in `issues`. `producedAt` is compared as an instant, so a different timezone offset is not different content. The same rule applies to a repeated `observationId` inside one result: identical copies collapse, differing copies are dropped and reported.
+- The same `resultId` delivered twice with identical content is a duplicate and is kept once (`receivedAt` is receiver metadata and does not count as content). With different content it is a conflict: unless a clean result with a strictly higher revision exists, the category reports `conflict`, yields no insights, and any withheld clean result is named in `issues`. `producedAt` is compared as an instant and the order of `items` and `analyzedSpans` is ignored, so a different timezone offset or a re-serialised list is not different content. The same rule applies to a repeated `observationId` inside one result: identical copies collapse, differing copies are dropped and reported.
 - Two different results at the same highest revision are a conflict, not a tie broken by timestamp.
 - Missing confidence is `null`, never 0 or 1. A non-finite or out-of-range confidence also becomes `null` and is reported, and the observation is kept.
 - Observations are never merged by label. Two "Alex" mentions stay two insights. Identity resolution is a product decision downstream.
@@ -60,6 +60,10 @@ Other review suggestions I rejected, with the reason: dropping an observation wh
 ## Time
 
 About 30 minutes before the clock: reading the brief, getibble.com and getviolet.io, and a design discussion across two models. Implementation clock on 2026-09-10: 17:39 to 18:04 for scaffold, contracts, function, tests, this README and one review round.
+
+## After the timebox
+
+The implementation clock stopped at 18:04. One more commit landed after it and is labelled as such in the history. A multi-agent review that had been running finished late and confirmed four gaps, all fixed in that commit and nothing else: `Issue` now carries `kind`, so a conflict entry can be paired with its category when more than one category is in conflict; deliveries are grouped per category and result id; the order of `items` and `analyzedSpans` no longer counts as content when comparing repeated deliveries; the representative among identical deliveries is chosen deterministically even when only the timestamp formatting differs. Tests 2 and 3 gained the branches that had no assertion: same-revision rivals, conflicting observation copies, media mismatch, an unexpected category and the `failed` state.
 
 ## Why this shape fits Violet
 

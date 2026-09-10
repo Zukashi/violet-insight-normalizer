@@ -43,11 +43,11 @@ export function normalize(
   const candidatesByKind = Map.groupBy(distinct, (result) => result.kind);
 
   for (const kind of KINDS) {
-    const selected = selectWinner(candidatesByKind.get(kind) ?? [], issues);
+    const selected = selectWinner(kind, candidatesByKind.get(kind) ?? [], issues);
     const conflictRevision = conflictRevisionByKind.get(kind);
     if (conflictRevision !== undefined && !outranksConflict(selected, conflictRevision)) {
       if (selected.outcome === 'winner') {
-        issues.push(issue(ISSUE_CODE.WITHHELD_BY_CONFLICT, [selected.result.resultId], []));
+        issues.push(issue(ISSUE_CODE.WITHHELD_BY_CONFLICT, kind, [selected.result.resultId], []));
       }
       categories[kind] = conflictState();
       continue;
@@ -80,7 +80,7 @@ function admit(result: ProviderResult, mediaId: string, selection: Selection, is
   if (code === null) {
     return true;
   }
-  issues.push(issue(code, [result.resultId], []));
+  issues.push(issue(code, result.kind, [result.resultId], []));
   return false;
 }
 
@@ -104,25 +104,25 @@ function dropRepeatedDeliveries(
   const distinct: ProviderResult[] = [];
   const conflictRevisionByKind = new Map<Kind, number>();
 
-  for (const [resultId, deliveries] of Map.groupBy(results, (result) => result.resultId)) {
+  for (const deliveries of Map.groupBy(results, (result) => `${result.kind}:${result.resultId}`).values()) {
     const [first, ...repeats] = deliveries;
     if (first === undefined) {
+      continue;
+    }
+    if (repeats.length === 0) {
+      distinct.push(first);
       continue;
     }
     const firstShape = deliveryShape(first);
     const conflicting = repeats.some((repeat) => deliveryShape(repeat) !== firstShape);
     if (!conflicting) {
       distinct.push(first);
-      if (repeats.length > 0) {
-        issues.push(issue(ISSUE_CODE.DUPLICATE_DELIVERY, [resultId], []));
-      }
+      issues.push(issue(ISSUE_CODE.DUPLICATE_DELIVERY, first.kind, [first.resultId], []));
       continue;
     }
-    for (const delivery of deliveries) {
-      const known = conflictRevisionByKind.get(delivery.kind) ?? -1;
-      conflictRevisionByKind.set(delivery.kind, Math.max(known, delivery.revision));
-    }
-    issues.push(issue(ISSUE_CODE.CONFLICTING_DELIVERY, [resultId], []));
+    const known = conflictRevisionByKind.get(first.kind) ?? -1;
+    conflictRevisionByKind.set(first.kind, deliveries.reduce((highest, delivery) => Math.max(highest, delivery.revision), known));
+    issues.push(issue(ISSUE_CODE.CONFLICTING_DELIVERY, first.kind, [first.resultId], []));
   }
 
   return { distinct, conflictRevisionByKind };
@@ -132,21 +132,21 @@ function outranksConflict(selected: Selected, conflictRevision: number): boolean
   return selected.outcome === 'winner' && selected.result.revision > conflictRevision;
 }
 
-function selectWinner(candidates: readonly ProviderResult[], issues: Issue[]): Selected {
+function selectWinner(kind: Kind, candidates: readonly ProviderResult[], issues: Issue[]): Selected {
   if (candidates.length === 0) {
     return { outcome: 'none' };
   }
   const highestRevision = candidates.reduce((highest, candidate) => Math.max(highest, candidate.revision), 0);
   const superseded = candidates.filter((candidate) => candidate.revision !== highestRevision);
   if (superseded.length > 0) {
-    issues.push(issue(ISSUE_CODE.SUPERSEDED_REVISION, superseded.map((candidate) => candidate.resultId), []));
+    issues.push(issue(ISSUE_CODE.SUPERSEDED_REVISION, kind, superseded.map((candidate) => candidate.resultId), []));
   }
   const [winner, ...rivals] = candidates.filter((candidate) => candidate.revision === highestRevision);
   if (winner === undefined) {
     return { outcome: 'none' };
   }
   if (rivals.length > 0) {
-    issues.push(issue(ISSUE_CODE.CONFLICTING_REVISION, [winner, ...rivals].map((candidate) => candidate.resultId), []));
+    issues.push(issue(ISSUE_CODE.CONFLICTING_REVISION, kind, [winner, ...rivals].map((candidate) => candidate.resultId), []));
     return { outcome: 'conflict' };
   }
   return { outcome: 'winner', result: winner };
@@ -189,13 +189,13 @@ function insightsOf(result: ProviderResult, issues: Issue[]): Insight[] {
   }
 
   if (duplicated.length > 0) {
-    issues.push(issue(ISSUE_CODE.DUPLICATE_OBSERVATION, [result.resultId], duplicated.toSorted((a, b) => compareStrings(a, b))));
+    issues.push(issue(ISSUE_CODE.DUPLICATE_OBSERVATION, result.kind, [result.resultId], duplicated.toSorted((a, b) => compareStrings(a, b))));
   }
   if (conflicting.length > 0) {
-    issues.push(issue(ISSUE_CODE.CONFLICTING_OBSERVATION, [result.resultId], conflicting.toSorted((a, b) => compareStrings(a, b))));
+    issues.push(issue(ISSUE_CODE.CONFLICTING_OBSERVATION, result.kind, [result.resultId], conflicting.toSorted((a, b) => compareStrings(a, b))));
   }
   if (invalidConfidence.length > 0) {
-    issues.push(issue(ISSUE_CODE.INVALID_CONFIDENCE, [result.resultId], invalidConfidence.toSorted((a, b) => compareStrings(a, b))));
+    issues.push(issue(ISSUE_CODE.INVALID_CONFIDENCE, result.kind, [result.resultId], invalidConfidence.toSorted((a, b) => compareStrings(a, b))));
   }
   return insights;
 }
@@ -239,8 +239,8 @@ function sourceOf(result: ProviderResult): Source {
   };
 }
 
-function issue(code: IssueCode, resultIds: readonly string[], observationIds: readonly string[]): Issue {
-  return { code, resultIds, observationIds };
+function issue(code: IssueCode, kind: Kind, resultIds: readonly string[], observationIds: readonly string[]): Issue {
+  return { code, kind, resultIds, observationIds };
 }
 
 function uniqueIssues(issues: readonly Issue[]): Issue[] {
@@ -274,13 +274,18 @@ function initialCategories(selection: Selection): Categories {
 }
 
 function deliveryShape(result: ProviderResult): string {
-  const { receivedAt: _receivedAt, items, ...content } = result;
+  const { receivedAt: _receivedAt, items, analyzedSpans, ...content } = result;
   const observations: readonly Observation[] = items;
   return canonicalJson({
     ...content,
     producedAt: Date.parse(content.producedAt),
-    items: observations.map((item) => observationShape(item))
+    analyzedSpans: analyzedSpans?.toSorted((a, b) => compareSpans(a, b)) ?? null,
+    items: observations.toSorted((a, b) => compareObservations(a, b)).map((item) => observationShape(item))
   });
+}
+
+function compareSpans(a: Span, b: Span): number {
+  return compareNumbers(a.startMs, b.startMs) || compareNumbers(a.endMs, b.endMs);
 }
 
 function observationShape(item: Observation): Record<string, unknown> {
@@ -329,7 +334,8 @@ function compareResults(a: ProviderResult, b: ProviderResult): number {
     compareNumbers(a.revision, b.revision) ||
     compareStrings(a.resultId, b.resultId) ||
     compareStrings(deliveryShape(a), deliveryShape(b)) ||
-    compareStrings(a.receivedAt, b.receivedAt)
+    compareStrings(a.receivedAt, b.receivedAt) ||
+    compareStrings(a.producedAt, b.producedAt)
   );
 }
 
@@ -358,6 +364,7 @@ function compareInsights(a: Insight, b: Insight): number {
 function compareIssues(a: Issue, b: Issue): number {
   return (
     compareStrings(a.code, b.code) ||
+    compareNumbers(KINDS.indexOf(a.kind), KINDS.indexOf(b.kind)) ||
     compareStrings(a.resultIds.join(','), b.resultIds.join(',')) ||
     compareStrings(a.observationIds.join(','), b.observationIds.join(','))
   );

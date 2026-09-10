@@ -133,6 +133,7 @@ export type IssueCode = (typeof ISSUE_CODE)[keyof typeof ISSUE_CODE];
 
 export interface Issue {
   readonly code: IssueCode;
+  readonly kind: Kind;
   readonly resultIds: readonly string[];
   readonly observationIds: readonly string[];
 }

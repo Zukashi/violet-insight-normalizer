@@ -59,7 +59,7 @@ Other review suggestions I rejected, with the reason: dropping an observation wh
 
 ## Time
 
-About 1.5 hours before the clock: reading the brief, getibble.com and getviolet.io, and a design discussion across two models. Implementation clock on 2026-09-10: 17:39 to END_TIME for scaffold, contracts, function, tests, this README and one review round.
+About 1.5 hours before the clock: reading the brief, getibble.com and getviolet.io, and a design discussion across two models. Implementation clock on 2026-09-10: 17:39 to 18:04 for scaffold, contracts, function, tests, this README and one review round.
 
 ## Why this shape fits Violet
 

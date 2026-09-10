@@ -28,7 +28,6 @@ type Confidence =
   | { readonly status: 'unknown'; readonly value: null }
   | { readonly status: 'invalid'; readonly value: null };
 
-const NON_JSON_MARK = '\u0000non-json:';
 
 export function normalize(
   mediaId: string,
@@ -176,8 +175,8 @@ function insightsOf(result: ProviderResult, issues: Issue[]): Insight[] {
       continue;
     }
     if (repeats.length > 0) {
-      const firstShape = canonicalJson(first);
-      if (repeats.some((repeat) => canonicalJson(repeat) !== firstShape)) {
+      const firstShape = canonicalJson(observationShape(first));
+      if (repeats.some((repeat) => canonicalJson(observationShape(repeat)) !== firstShape)) {
         conflicting.push(observationId);
         continue;
       }
@@ -276,23 +275,36 @@ function initialCategories(selection: Selection): Categories {
 }
 
 function deliveryShape(result: ProviderResult): string {
-  const { receivedAt: _receivedAt, ...content } = result;
-  return canonicalJson({ ...content, producedAt: Date.parse(content.producedAt) });
+  const { receivedAt: _receivedAt, items, ...content } = result;
+  const observations: readonly Observation[] = items;
+  return canonicalJson({
+    ...content,
+    producedAt: Date.parse(content.producedAt),
+    items: observations.map((item) => observationShape(item))
+  });
+}
+
+function observationShape(item: Observation): Record<string, unknown> {
+  return { ...item, confidence: confidenceFingerprint(item.confidence) };
+}
+
+function confidenceFingerprint(raw: unknown): string {
+  const classified = classifyConfidence(raw);
+  if (classified.status === 'known') {
+    return `known:${String(classified.value)}`;
+  }
+  if (classified.status === 'unknown') {
+    return 'unknown';
+  }
+  return `invalid:${typeof raw}`;
 }
 
 function canonicalJson(value: unknown): string {
-  return JSON.stringify(value, (_key, current: unknown) => {
-    if (typeof current === 'number' && !Number.isFinite(current)) {
-      return `${NON_JSON_MARK}${String(current)}`;
-    }
-    if (typeof current === 'bigint') {
-      return `${NON_JSON_MARK}${String(current)}n`;
-    }
-    if (isRecord(current)) {
-      return Object.fromEntries(Object.entries(current).toSorted(([a], [b]) => compareStrings(a, b)));
-    }
-    return current;
-  });
+  return JSON.stringify(value, (_key, current: unknown) =>
+    isRecord(current)
+      ? Object.fromEntries(Object.entries(current).toSorted(([a], [b]) => compareStrings(a, b)))
+      : current
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -317,12 +329,16 @@ function compareResults(a: ProviderResult, b: ProviderResult): number {
     compareNumbers(KINDS.indexOf(a.kind), KINDS.indexOf(b.kind)) ||
     compareNumbers(a.revision, b.revision) ||
     compareStrings(a.resultId, b.resultId) ||
-    compareStrings(canonicalJson(a), canonicalJson(b))
+    compareStrings(deliveryShape(a), deliveryShape(b)) ||
+    compareStrings(a.receivedAt, b.receivedAt)
   );
 }
 
 function compareObservations(a: Observation, b: Observation): number {
-  return compareStrings(a.observationId, b.observationId) || compareStrings(canonicalJson(a), canonicalJson(b));
+  return (
+    compareStrings(a.observationId, b.observationId) ||
+    compareStrings(canonicalJson(observationShape(a)), canonicalJson(observationShape(b)))
+  );
 }
 
 function compareSpanStarts(a: Span | null, b: Span | null): number {

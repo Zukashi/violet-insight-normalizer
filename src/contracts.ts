@@ -101,7 +101,7 @@ export interface Source {
 export interface CategoryState {
   readonly status: CategoryStatus;
   readonly revision: number | null;
-  readonly analyzedSpans: readonly Span[] | null;
+  readonly analyzedSpans: readonly Readonly<Span>[] | null;
   readonly source: Source | null;
 }
 
@@ -109,8 +109,8 @@ export interface InsightOf<K extends Kind> {
   readonly id: string;
   readonly kind: K;
   readonly observationId: string;
-  readonly value: Values[K];
-  readonly span: Span | null;
+  readonly value: Readonly<Values[K]>;
+  readonly span: Readonly<Span> | null;
   readonly confidence: number | null;
   readonly source: Source;
 }

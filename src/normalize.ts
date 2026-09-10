@@ -28,7 +28,6 @@ type Confidence =
   | { readonly status: 'unknown'; readonly value: null }
   | { readonly status: 'invalid'; readonly value: null };
 
-
 export function normalize(
   mediaId: string,
   results: readonly ProviderResult[],
@@ -206,7 +205,7 @@ function classifyConfidence(raw: unknown): Confidence {
     return { status: 'unknown', value: null };
   }
   if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0 && raw <= 1) {
-    return { status: 'known', value: raw };
+    return { status: 'known', value: Object.is(raw, -0) ? 0 : raw };
   }
   return { status: 'invalid', value: null };
 }

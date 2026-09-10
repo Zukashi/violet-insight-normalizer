@@ -20,7 +20,7 @@ Node 22.12 or newer (`toSorted`, `Map.groupBy`, vitest 4).
 
 ## Invariants
 
-- Same multiset of results gives a deep-equal record, whatever the delivery order and however many times a result is repeated. No clock, no randomness, input never mutated.
+- The same set of deliveries gives a deep-equal record whatever the order. A repeated delivery changes nothing in `categories` or `insights`; it only adds one duplicate entry to `issues`, because reporting duplicates is part of the job. No clock, no randomness, input never mutated.
 - Only the selected run contributes insights. Other runs are reported as ignored, never blended in. A newer model becomes the truth when someone selects it, not because it arrived later or because its version string sorts higher.
 - Within a category the highest `revision` replaces lower ones. A late lower revision cannot resurrect removed observations. An empty complete snapshot means "analyzed, nothing found" and clears the category.
 - The same `resultId` delivered twice with identical content is a duplicate and is kept once (`receivedAt` is receiver metadata and does not count as content). With different content it is a conflict: unless a clean result with a strictly higher revision exists, the category reports `conflict`, yields no insights, and any withheld clean result is named in `issues`. `producedAt` is compared as an instant, so a different timezone offset is not different content. The same rule applies to a repeated `observationId` inside one result: identical copies collapse, differing copies are dropped and reported.
@@ -28,7 +28,8 @@ Node 22.12 or newer (`toSorted`, `Map.groupBy`, vitest 4).
 - Missing confidence is `null`, never 0 or 1. A non-finite or out-of-range confidence also becomes `null` and is reported, and the observation is kept.
 - Observations are never merged by label. Two "Alex" mentions stay two insights. Identity resolution is a product decision downstream.
 - A category that was expected but never delivered is `pending`, not silently empty. Absence is never success.
-- Nothing disappears silently. Every ignored, superseded, duplicated or invalid item has an issue entry with its ids.
+- Nothing disappears silently. Every ignored, superseded, duplicated, withheld or invalid item has an issue entry with its ids.
+- A category's status says what the provider delivered (`complete`, `partial`, `failed`). Evidence removed because of an observation conflict is visible in `issues`, not in the status.
 
 ## Assumptions
 
@@ -51,8 +52,10 @@ Node 22.12 or newer (`toSorted`, `Map.groupBy`, vitest 4).
 ## AI work log
 
 - **What AI helped with.** Two models (Claude, Codex) analysed the brief independently and mined my own earlier work for reusable patterns: out-of-order webhook rank guards, explicit-version snapshot selection, tolerant vendor schemas with strict internal types. Claude drafted the scaffold, the function and the tests from a plan I approved. Codex then reviewed the result adversarially.
-- **What I verified or corrected.** Every precedent the models cited was checked in source before I used it (three claims checked, three confirmed, one line number wrong). Tests were run, not assumed; the order test replays three fixed permutations and checks the input was not mutated. Codex review findings were triaged by hand: REVIEW_TRIAGE.
+- **What I verified or corrected.** Every precedent the models cited was checked in source before I used it (three claims checked, three confirmed, one line number wrong). Tests were run, not assumed; the order test replays fixed permutations and checks the input was not mutated. Three review passes ran on the result: an adversarial Codex review, a Codex sweep against a corpus of remarks from my own past code reviews, and a multi-agent Claude review. I triaged every finding by hand and applied most of them across four fix commits; the git history shows each round. The two findings that mattered most were both mine to get wrong: a redelivery that differed only in `receivedAt` counted as a conflict, and a conflict on an already superseded revision poisoned the whole category.
 - **What judgment remained mine, and one suggestion I rejected.** Explicit run selection instead of my first idea (newest `producedAt` wins), no merging by label, and keeping observations with invalid confidence instead of dropping them. Rejected: a `minConfidence` option inside `normalize`. Filtering in the core hides evidence; thresholds belong to the product at the read boundary.
+
+Other review suggestions I rejected, with the reason: dropping an observation whose confidence is invalid (loses evidence for a score bug); modelling `CategoryState` as a discriminated union that carries the rival candidates of a conflict (the conflict issue already names them, and it would not fit the timebox); collapsing the confidence classification to a boolean (the difference between "not provided" and "provided but unusable" is meaningful to a consumer); building the category record with a type cast instead of the explicit seven-key literal.
 
 ## Time
 

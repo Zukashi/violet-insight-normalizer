@@ -158,7 +158,7 @@ function categoryStateOf(result: ProviderResult): CategoryState {
   return {
     status: result.state,
     revision: result.revision,
-    analyzedSpans: result.analyzedSpans ?? null,
+    analyzedSpans: result.analyzedSpans?.map((span) => ({ ...span })) ?? null,
     source: sourceOf(result)
   };
 }
@@ -222,8 +222,8 @@ function toInsight(result: ProviderResult, item: Observation, confidence: number
     }),
     kind: result.kind,
     observationId: item.observationId,
-    value: item.value,
-    span: item.span ?? null,
+    value: { ...item.value },
+    span: item.span === undefined ? null : { ...item.span },
     confidence,
     source: sourceOf(result)
   };

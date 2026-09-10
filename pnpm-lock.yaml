@@ -7,6 +7,10 @@ settings:
 importers:
 
   .:
+    dependencies:
+      zod:
+        specifier: ^4.5.4
+        version: 4.5.4
     devDependencies:
       typescript:
         specifier: ^5.9.3
@@ -14,9 +18,6 @@ importers:
       vitest:
         specifier: ^4.1.11
         version: 4.1.11(vite@8.2.2)
-      zod:
-        specifier: ^4.5.4
-        version: 4.5.4
 
 packages:
 

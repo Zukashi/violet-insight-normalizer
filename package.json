@@ -1,0 +1,20 @@
+{
+  "name": "violet-insight-normalizer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Folds asynchronous provider analysis results for one conversation into a deterministic insight record",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@11.0.9",
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.11",
+    "zod": "^4.5.4"
+  }
+}

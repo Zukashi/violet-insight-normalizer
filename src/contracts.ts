@@ -87,6 +87,8 @@ export interface Selection {
 export const CATEGORY_STATUSES = ['not_requested', 'pending', 'partial', 'complete', 'failed', 'conflict'] as const;
 export type CategoryStatus = (typeof CATEGORY_STATUSES)[number];
 
+RESULT_STATES satisfies readonly CategoryStatus[];
+
 export interface Source {
   readonly provider: string;
   readonly modelVersion: string;

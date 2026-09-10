@@ -4,7 +4,6 @@ import {
   KINDS,
   insightIdOf,
   type CategoryState,
-  type CategoryStatus,
   type Insight,
   type InsightRecord,
   type Issue,
@@ -12,7 +11,6 @@ import {
   type Kind,
   type Observation,
   type ProviderResult,
-  type ResultState,
   type Selection,
   type Source,
   type Span
@@ -45,15 +43,14 @@ export function normalize(
   const categories = initialCategories(selection);
   const insights: Insight[] = [];
 
+  const candidatesByKind = Map.groupBy(distinct, (result) => result.kind);
+
   for (const kind of KINDS) {
     if (conflictedKinds.has(kind)) {
       categories[kind] = conflictState();
       continue;
     }
-    const selected = selectWinner(
-      distinct.filter((result) => result.kind === kind),
-      issues
-    );
+    const selected = selectWinner(candidatesByKind.get(kind) ?? [], issues);
     if (selected.outcome === 'none') {
       continue;
     }
@@ -71,7 +68,7 @@ export function normalize(
     selection: { ...selection, expectedKinds: [...selection.expectedKinds] },
     categories,
     insights: insights.toSorted((a, b) => compareInsights(a, b)),
-    issues: issues.toSorted((a, b) => compareIssues(a, b))
+    issues: uniqueIssues(issues).toSorted((a, b) => compareIssues(a, b))
   };
 }
 
@@ -130,7 +127,7 @@ function selectWinner(candidates: readonly ProviderResult[], issues: Issue[]): S
   if (candidates.length === 0) {
     return { outcome: 'none' };
   }
-  const highestRevision = Math.max(...candidates.map((candidate) => candidate.revision));
+  const highestRevision = candidates.reduce((highest, candidate) => Math.max(highest, candidate.revision), 0);
   const superseded = candidates.filter((candidate) => candidate.revision !== highestRevision);
   if (superseded.length > 0) {
     issues.push(issue(ISSUE_CODE.SUPERSEDED_REVISION, superseded.map((candidate) => candidate.resultId), []));
@@ -148,26 +145,11 @@ function selectWinner(candidates: readonly ProviderResult[], issues: Issue[]): S
 
 function categoryStateOf(result: ProviderResult): CategoryState {
   return {
-    status: statusOf(result.state),
+    status: result.state,
     revision: result.revision,
     analyzedSpans: result.analyzedSpans ?? null,
     source: sourceOf(result)
   };
-}
-
-function statusOf(state: ResultState): CategoryStatus {
-  switch (state) {
-    case 'complete':
-      return 'complete';
-    case 'partial':
-      return 'partial';
-    case 'failed':
-      return 'failed';
-    default: {
-      const exhaustive: never = state;
-      throw new Error(`Unsupported result state: ${String(exhaustive)}`);
-    }
-  }
 }
 
 function insightsOf(result: ProviderResult, issues: Issue[]): Insight[] {
@@ -250,6 +232,11 @@ function sourceOf(result: ProviderResult): Source {
 
 function issue(code: IssueCode, resultIds: readonly string[], observationIds: readonly string[]): Issue {
   return { code, resultIds, observationIds };
+}
+
+function uniqueIssues(issues: readonly Issue[]): Issue[] {
+  const byShape = new Map(issues.map((entry) => [canonicalJson(entry), entry] as const));
+  return [...byShape.values()];
 }
 
 function conflictState(): CategoryState {

@@ -203,7 +203,7 @@ describe('normalize', () => {
     } satisfies ProviderResult;
 
     // when
-    const record = normalize(MEDIA_ID, [previousPeople, reprocessedPeople, previousTopics], selection);
+    const record = normalize(MEDIA_ID, [previousPeople, reprocessedPeople, previousTopics, previousPeople], selection);
 
     // then
     expect(record.insights.map((insight) => [insight.id, insight.value, insight.confidence])).toEqual([

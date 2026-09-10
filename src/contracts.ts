@@ -55,8 +55,8 @@ const resultSchemaFor = <K extends Kind, TObservation extends z.ZodType>(kind: K
     runId: nonEmptyText,
     revision: z.number().int().nonnegative(),
     state: z.enum(RESULT_STATES),
-    producedAt: z.iso.datetime(),
-    receivedAt: z.iso.datetime(),
+    producedAt: z.iso.datetime({ offset: true }),
+    receivedAt: z.iso.datetime({ offset: true }),
     analyzedSpans: z.array(spanSchema).optional(),
     items: z.array(observation)
   });
@@ -123,6 +123,7 @@ export const ISSUE_CODE = {
   SUPERSEDED_REVISION: 'SUPERSEDED_REVISION',
   CONFLICTING_REVISION: 'CONFLICTING_REVISION',
   DUPLICATE_OBSERVATION: 'DUPLICATE_OBSERVATION',
+  CONFLICTING_OBSERVATION: 'CONFLICTING_OBSERVATION',
   INVALID_CONFIDENCE: 'INVALID_CONFIDENCE'
 } as const;
 export type IssueCode = (typeof ISSUE_CODE)[keyof typeof ISSUE_CODE];

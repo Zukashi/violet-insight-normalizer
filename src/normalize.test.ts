@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  INSIGHT_RECORD_SCHEMA_VERSION,
   ISSUE_CODE,
   providerResultSchema,
   type ProviderResult,
@@ -69,16 +70,13 @@ describe('normalize', () => {
         { observationId: 's-1', value: { polarity: 'positive', targetId: 'brand-42' }, span: { startMs: 5_000, endMs: 10_000 }, confidence: 0.55 }
       ]
     } satisfies ProviderResult;
-    const results = [sentiment, topics, transcript];
-    for (const result of results) {
-      expect(providerResultSchema.safeParse(result).success).toBe(true);
-    }
+    const results = [sentiment, topics, transcript].map((result) => providerResultSchema.parse(result));
 
     // when
     const record = normalize(MEDIA_ID, results, selection);
 
     // then
-    expect(record.schemaVersion).toBe(1);
+    expect(record.schemaVersion).toBe(INSIGHT_RECORD_SCHEMA_VERSION);
     expect(record.mediaId).toBe(MEDIA_ID);
     expect(record.issues).toEqual([]);
     expect(record.insights.map((insight) => [insight.kind, insight.observationId, insight.confidence])).toEqual([
@@ -136,22 +134,29 @@ describe('normalize', () => {
       producedAt: '2026-09-10T10:01:00Z',
       items: [{ observationId: 't-a', value: { label: 'Audience growth' }, confidence: 0.65 }]
     } satisfies ProviderResult;
-    const delivered = [secondRevision, firstRevision, secondRevision];
+    const retriedSecondRevision = { ...secondRevision, receivedAt: '2026-09-10T10:02:00Z' } satisfies ProviderResult;
+    const delivered = [retriedSecondRevision, firstRevision, secondRevision];
     const deliveredSnapshot: unknown = JSON.parse(JSON.stringify(delivered));
     const permutations = [
-      [firstRevision, secondRevision, secondRevision],
-      [secondRevision, secondRevision, firstRevision],
-      [secondRevision, firstRevision, secondRevision]
+      [firstRevision, secondRevision, retriedSecondRevision],
+      [secondRevision, retriedSecondRevision, firstRevision],
+      [secondRevision, firstRevision, retriedSecondRevision]
     ];
+    const conflictingRedelivery = {
+      ...secondRevision,
+      items: [{ observationId: 't-a', value: { label: 'Audience growth' }, confidence: 0.9 }]
+    } satisfies ProviderResult;
 
     // when
     const record = normalize(MEDIA_ID, delivered, selection);
     const replayed = permutations.map((permutation) => normalize(MEDIA_ID, permutation, selection));
+    const conflicted = normalize(MEDIA_ID, [...delivered, conflictingRedelivery], selection);
 
     // then
     expect(record.insights.map((insight) => [insight.observationId, insight.source.resultId, insight.confidence])).toEqual([
       ['t-a', 'res-topic-rev-2', 0.65]
     ]);
+    expect(record.insights[0]?.source.receivedAt).toBe('2026-09-10T10:00:05Z');
     expect(record.categories.topic).toEqual(
       expect.objectContaining({ status: 'complete', revision: 2, source: expect.objectContaining({ resultId: 'res-topic-rev-2' }) })
     );
@@ -163,6 +168,11 @@ describe('normalize', () => {
       expect(replay).toEqual(record);
     }
     expect(delivered).toEqual(deliveredSnapshot);
+    expect(conflicted.categories.topic).toEqual({ status: 'conflict', revision: null, analyzedSpans: null, source: null });
+    expect(conflicted.insights).toEqual([]);
+    expect(conflicted.issues).toEqual([
+      { code: ISSUE_CODE.CONFLICTING_DELIVERY, resultIds: ['res-topic-rev-2'], observationIds: [] }
+    ]);
   });
 
   it('keeps uncertain observations distinct and never falls back to an unselected run', () => {

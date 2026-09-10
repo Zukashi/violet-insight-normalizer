@@ -30,7 +30,7 @@ type Confidence =
   | { readonly status: 'unknown'; readonly value: null }
   | { readonly status: 'invalid'; readonly value: null };
 
-const CONFLICT_STATE: CategoryState = { status: 'conflict', revision: null, analyzedSpans: null, source: null };
+const NON_JSON_MARK = '\u0000non-json:';
 
 export function normalize(
   mediaId: string,
@@ -41,11 +41,15 @@ export function normalize(
   const admitted = results
     .toSorted((a, b) => compareResults(a, b))
     .filter((result) => admit(result, mediaId, selection, issues));
-  const { distinct, conflictedResultIds } = dropRepeatedDeliveries(admitted, issues);
+  const { distinct, conflictedKinds } = dropRepeatedDeliveries(admitted, issues);
   const categories = initialCategories(selection);
   const insights: Insight[] = [];
 
   for (const kind of KINDS) {
+    if (conflictedKinds.has(kind)) {
+      categories[kind] = conflictState();
+      continue;
+    }
     const selected = selectWinner(
       distinct.filter((result) => result.kind === kind),
       issues
@@ -53,8 +57,8 @@ export function normalize(
     if (selected.outcome === 'none') {
       continue;
     }
-    if (selected.outcome === 'conflict' || conflictedResultIds.has(selected.result.resultId)) {
-      categories[kind] = CONFLICT_STATE;
+    if (selected.outcome === 'conflict') {
+      categories[kind] = conflictState();
       continue;
     }
     categories[kind] = categoryStateOf(selected.result);
@@ -96,9 +100,9 @@ function admissionIssue(result: ProviderResult, mediaId: string, selection: Sele
 function dropRepeatedDeliveries(
   results: readonly ProviderResult[],
   issues: Issue[]
-): { distinct: ProviderResult[]; conflictedResultIds: ReadonlySet<string> } {
+): { distinct: ProviderResult[]; conflictedKinds: ReadonlySet<Kind> } {
   const distinct: ProviderResult[] = [];
-  const conflictedResultIds = new Set<string>();
+  const conflictedKinds = new Set<Kind>();
 
   for (const [resultId, deliveries] of Map.groupBy(results, (result) => result.resultId)) {
     const [first, ...repeats] = deliveries;
@@ -109,15 +113,17 @@ function dropRepeatedDeliveries(
     if (repeats.length === 0) {
       continue;
     }
-    const firstShape = canonicalJson(first);
-    const conflicting = repeats.some((repeat) => canonicalJson(repeat) !== firstShape);
+    const firstShape = deliveryShape(first);
+    const conflicting = repeats.some((repeat) => deliveryShape(repeat) !== firstShape);
     if (conflicting) {
-      conflictedResultIds.add(resultId);
+      for (const delivery of deliveries) {
+        conflictedKinds.add(delivery.kind);
+      }
     }
     issues.push(issue(conflicting ? ISSUE_CODE.CONFLICTING_DELIVERY : ISSUE_CODE.DUPLICATE_DELIVERY, [resultId], []));
   }
 
-  return { distinct, conflictedResultIds };
+  return { distinct, conflictedKinds };
 }
 
 function selectWinner(candidates: readonly ProviderResult[], issues: Issue[]): Selected {
@@ -166,29 +172,39 @@ function statusOf(state: ResultState): CategoryStatus {
 
 function insightsOf(result: ProviderResult, issues: Issue[]): Insight[] {
   const items: readonly Observation[] = result.items;
-  const seen = new Set<string>();
   const duplicated: string[] = [];
+  const conflicting: string[] = [];
   const invalidConfidence: string[] = [];
   const insights: Insight[] = [];
 
-  for (const item of items.toSorted((a, b) => compareObservations(a, b))) {
-    if (seen.has(item.observationId)) {
-      duplicated.push(item.observationId);
+  for (const [observationId, copies] of Map.groupBy(items, (item) => item.observationId)) {
+    const [first, ...repeats] = copies.toSorted((a, b) => compareObservations(a, b));
+    if (first === undefined) {
       continue;
     }
-    seen.add(item.observationId);
-    const confidence = classifyConfidence(item.confidence);
-    if (confidence.status === 'invalid') {
-      invalidConfidence.push(item.observationId);
+    if (repeats.length > 0) {
+      const firstShape = canonicalJson(first);
+      if (repeats.some((repeat) => canonicalJson(repeat) !== firstShape)) {
+        conflicting.push(observationId);
+        continue;
+      }
+      duplicated.push(observationId);
     }
-    insights.push(toInsight(result, item, confidence.value));
+    const confidence = classifyConfidence(first.confidence);
+    if (confidence.status === 'invalid') {
+      invalidConfidence.push(observationId);
+    }
+    insights.push(toInsight(result, first, confidence.value));
   }
 
   if (duplicated.length > 0) {
-    issues.push(issue(ISSUE_CODE.DUPLICATE_OBSERVATION, [result.resultId], duplicated));
+    issues.push(issue(ISSUE_CODE.DUPLICATE_OBSERVATION, [result.resultId], duplicated.toSorted((a, b) => compareStrings(a, b))));
+  }
+  if (conflicting.length > 0) {
+    issues.push(issue(ISSUE_CODE.CONFLICTING_OBSERVATION, [result.resultId], conflicting.toSorted((a, b) => compareStrings(a, b))));
   }
   if (invalidConfidence.length > 0) {
-    issues.push(issue(ISSUE_CODE.INVALID_CONFIDENCE, [result.resultId], invalidConfidence));
+    issues.push(issue(ISSUE_CODE.INVALID_CONFIDENCE, [result.resultId], invalidConfidence.toSorted((a, b) => compareStrings(a, b))));
   }
   return insights;
 }
@@ -236,6 +252,10 @@ function issue(code: IssueCode, resultIds: readonly string[], observationIds: re
   return { code, resultIds, observationIds };
 }
 
+function conflictState(): CategoryState {
+  return { status: 'conflict', revision: null, analyzedSpans: null, source: null };
+}
+
 function initialCategory(kind: Kind, selection: Selection): CategoryState {
   return {
     status: selection.expectedKinds.includes(kind) ? 'pending' : 'not_requested',
@@ -257,12 +277,24 @@ function initialCategories(selection: Selection): Categories {
   };
 }
 
+function deliveryShape(result: ProviderResult): string {
+  const { receivedAt: _receivedAt, ...content } = result;
+  return canonicalJson(content);
+}
+
 function canonicalJson(value: unknown): string {
-  return JSON.stringify(value, (_key, current: unknown) =>
-    isRecord(current)
-      ? Object.fromEntries(Object.entries(current).toSorted(([a], [b]) => compareStrings(a, b)))
-      : current
-  );
+  return JSON.stringify(value, (_key, current: unknown) => {
+    if (typeof current === 'number' && !Number.isFinite(current)) {
+      return `${NON_JSON_MARK}${String(current)}`;
+    }
+    if (typeof current === 'bigint') {
+      return `${NON_JSON_MARK}${String(current)}n`;
+    }
+    if (isRecord(current)) {
+      return Object.fromEntries(Object.entries(current).toSorted(([a], [b]) => compareStrings(a, b)));
+    }
+    return current;
+  });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -280,15 +312,11 @@ function compareNumbers(a: number, b: number): number {
   return a - b;
 }
 
-function kindIndex(kind: Kind): number {
-  return KINDS.indexOf(kind);
-}
-
 function compareResults(a: ProviderResult, b: ProviderResult): number {
   return (
     compareStrings(a.provider, b.provider) ||
     compareStrings(a.runId, b.runId) ||
-    compareNumbers(kindIndex(a.kind), kindIndex(b.kind)) ||
+    compareNumbers(KINDS.indexOf(a.kind), KINDS.indexOf(b.kind)) ||
     compareNumbers(a.revision, b.revision) ||
     compareStrings(a.resultId, b.resultId) ||
     compareStrings(canonicalJson(a), canonicalJson(b))
@@ -308,7 +336,7 @@ function compareSpanStarts(a: Span | null, b: Span | null): number {
 
 function compareInsights(a: Insight, b: Insight): number {
   return (
-    compareNumbers(kindIndex(a.kind), kindIndex(b.kind)) ||
+    compareNumbers(KINDS.indexOf(a.kind), KINDS.indexOf(b.kind)) ||
     compareSpanStarts(a.span, b.span) ||
     compareStrings(a.observationId, b.observationId)
   );
